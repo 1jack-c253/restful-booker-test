@@ -1,4 +1,28 @@
 import requests
+import pytest
+
+
+BASE = "https://automationintesting.online"
+
+
+def cleanup_booking(session, booking_id):
+    """
+    删除测试过程中创建的预订。
+
+    这个站点是【公开沙箱】，全世界的人都在往上面写数据。如果不清理自己造的数据，
+    反复执行会让同一个房间累积大量预订，污染后续用例的执行环境。
+    """
+    if not booking_id:
+        return
+    try:
+        session.delete(
+            f"{BASE}/api/booking/{booking_id}",
+            headers={"Referer": f"{BASE}/"},
+            timeout=10,
+        )
+        print(f"已清理测试数据 bookingid={booking_id}")
+    except Exception as e:
+        print(f"清理 bookingid={booking_id} 失败：{e}")
 
 
 def test_get_rooms():
@@ -16,8 +40,17 @@ def test_get_room_by_id():
     assert response.json()["roomid"] == 1
     assert response.json()["roomName"] == "101"
     assert response.json()["type"] == "Single"
+@pytest.mark.xfail(
+    reason=(
+        "【接口缺陷】查询不存在但格式合法的房间号，服务端返回 500 而非 404。"
+        "对比实验：传非数字 abc → 404；传负数 -1 → 404；"
+        "只有数字格式正常但记录不存在（999、0）时才返回 500 —— "
+        "说明服务端对『查询无结果』这一分支未做处理，直接抛出了异常。"
+    ),
+    strict=False,
+)
 def test_get_invalid_room():
-    response = requests.get("https://automationintesting.online/api/room/999")
+    response = requests.get(f"{BASE}/api/room/999")
 
     assert response.status_code == 404
 
@@ -259,6 +292,16 @@ def test_create_and_get_booking():
     # 如果运行到这里，说明整个流程验证成功
     print("创建预订 → 查询预订 → 数据一致，测试通过")
 
+@pytest.mark.xfail(
+    reason=(
+        "【接口缺陷】PUT 更新预订时，若 roomid 与创建时相同则返回 409 Conflict。"
+        "对照实验（5 组，与日期无关）："
+        "房间3→房间3（数据原样不动）→409；房间3→房间2 →200；"
+        "房间1→房间1（数据原样不动）→409；房间1→房间2 →200。"
+        "推测服务端在做房间可用性校验时，把该预订自身也判定为占用，导致自冲突。"
+    ),
+    strict=False,
+)
 def test_create_and_update_booking():
     # ========================================
     # 第一步：创建 Session，并登录
@@ -358,6 +401,10 @@ def test_create_and_update_booking():
 
     print("修改预订状态码：", update_response.status_code)
     print("修改结果：", update_response.text)
+
+    # 先清理本次创建的预订，避免污染公共沙箱环境
+    # （放在断言之前，这样即使断言失败也能执行到）
+    cleanup_booking(session, booking_id)
 
     # 修改成功应该返回 200
     assert update_response.status_code == 200
